@@ -121,6 +121,9 @@ class DataEmbedding(nn.Module):
         if x_mark is None:
             x = self.value_embedding(x) + self.position_embedding(x)
         else:
+            v = self.value_embedding(x)
+            p = self.position_embedding(x)
+            t = self.temporal_embedding(x_mark)
             x = self.value_embedding(
                 x) + self.temporal_embedding(x_mark) + self.position_embedding(x)
         return self.dropout(x)

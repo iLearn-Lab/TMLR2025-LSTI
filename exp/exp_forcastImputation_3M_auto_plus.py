@@ -1,0 +1,541 @@
+from data_provider.data_factory_my import data_provider
+from exp.exp_basic import Exp_Basic
+from utils.tools import EarlyStopping_3, adjust_learning_rate, visual
+from utils.metrics import metric
+import torch
+import torch.nn as nn
+from torch import optim
+import os
+import time
+import warnings
+import numpy as np
+import copy
+import random
+import torch.nn.functional as F
+from sklearn.metrics import mean_squared_error
+from sklearn.metrics import mean_absolute_error
+from layers.MLP import Projector
+
+warnings.filterwarnings('ignore')
+
+
+class Exp_ForecastImputation_3M_auto_plus(Exp_Basic):
+    def __init__(self, args):
+        super(Exp_ForecastImputation_3M_auto_plus, self).__init__(args)
+        self.model_impute = self._build_model(True).to(self.device)
+        self.model_back = self._build_model().to(self.device)
+        self.impute_ratio_learner=Projector(args.enc_in, 2*args.pred_len).to(self.device)
+        self.HaveCorrelationLoss = False
+        self.training_time=0
+
+        # 计算所有模型的参数总和
+        models = [self.model, self.model_impute, self.model_back, self.impute_ratio_learner]
+        # models = [self.model_impute]
+        total_params = sum(p.numel() for model in models for p in model.parameters())
+        print(f'Total parameters in all models: {total_params}')
+
+
+    def _build_model(self, isImpute=False):
+        if isImpute:
+            args_impute = copy.deepcopy(self.args)
+            args_impute.task_name = "imputation"
+            args_impute.pred_len = 0
+            args_impute.seq_len = self.args.pred_len
+            self.args_impute = args_impute
+            model = self.model_dict[self.args.model].Model(args_impute).float()
+        else:
+            args_pred = copy.deepcopy(self.args)
+            args_pred.task_name = "long_term_forecast"
+            args_pred.pred_len = self.args.seq_len + self.args.pred_len
+            self.args_pred = args_pred
+            model = self.model_dict[self.args.model].Model(args_pred).float()
+
+        if self.args.use_multi_gpu and self.args.use_gpu:
+            model = nn.DataParallel(model, device_ids=self.args.device_ids)
+        return model
+
+    def _get_data(self, flag):
+        data_set, data_loader = data_provider(self.args, flag)
+        return data_set, data_loader
+
+    def _select_optimizer(self):
+        params = list(self.model.parameters()) + list(self.model_back.parameters()) + list(self.model_impute.parameters()) + list(self.impute_ratio_learner.parameters())
+        model_optim = optim.Adam(params, lr=self.args.learning_rate)
+        return model_optim
+
+    def _select_criterion(self):
+        criterion = nn.MSELoss()
+        return criterion
+
+    def vali(self, vali_data, vali_loader, criterion):
+        total_loss = []
+        self.model.eval()
+        self.model_back.eval()
+        self.model_impute.eval()
+        self.impute_ratio_learner.eval()
+
+        mask_tot = np.isnan(vali_data.data_miss)
+        true = vali_data.data_x[mask_tot].copy()
+        true = np.nan_to_num(true)
+        T, N = vali_data.data_miss.shape
+
+        # 正向预测
+        pred_len = self.args.pred_len
+        w_front = np.ones(T)
+        with torch.no_grad():
+            data_miss = vali_data.data_miss.copy()
+            seq_len = self.args.seq_len
+            i=seq_len
+            while(i < len(data_miss)):
+                mask_tmp = np.isnan(data_miss[i, :])
+                if np.any(mask_tmp): 
+                    mask = np.isnan(data_miss[i : i + pred_len, :])
+                    series = data_miss[i - seq_len : i, :]
+                    series = torch.tensor(series).float().to(self.device).unsqueeze(0)
+                    series_mark = vali_data.data_stamp[i - seq_len : i, :]
+                    series_mark = torch.tensor(series_mark).float().to(self.device).unsqueeze(0)
+                    
+                    outputs = self.model(series, series_mark, None, None)[:, -pred_len:, :]
+                    outputs = outputs.squeeze(0).cpu().numpy()
+                    outputs[~mask] = (data_miss[i : i + pred_len, :])[~mask]
+
+                    data_miss[i : i + pred_len, :] = outputs
+                    w_front[i : i + pred_len] = np.arange(pred_len, 0, -1)
+                    i = i + pred_len
+                else:
+                    i = i + 1
+            
+            pred_front = data_miss.copy()
+            
+        # 反向预测
+        w_back = np.ones(T)
+        with torch.no_grad():
+            data_miss_b = vali_data.data_miss
+            data_miss_b = data_miss_b[::-1, :].copy()
+            data_stamp = vali_data.data_stamp
+            data_stamp = data_stamp[::-1, :].copy()
+
+            seq_len = self.args.seq_len
+            i=seq_len
+            while(i < len(data_miss_b)):
+                mask_tmp = np.isnan(data_miss_b[i, :])
+                if np.any(mask_tmp): 
+                    mask_b = np.isnan(data_miss_b[i : i + pred_len, :])
+                    series_b = data_miss_b[i - seq_len : i, :]
+                    series_b = torch.tensor(series_b).float().to(self.device).unsqueeze(0)
+                    series_mark_b = data_stamp[i - seq_len : i, :]
+                    series_mark_b = torch.tensor(series_mark_b).float().to(self.device).unsqueeze(0)
+                    outputs = self.model_back(series_b, series_mark_b, None, None)[:, -pred_len:, :]
+                    outputs = outputs.squeeze(0).cpu().numpy()
+                    outputs[~mask_b] = (data_miss_b[i : i + pred_len, :])[~mask_b]
+
+                    data_miss_b[i : i + pred_len, :] = outputs
+                    w_back[i : i + pred_len] = np.arange(pred_len, 0, -1)
+                    i=i + pred_len
+                else:
+                    i=i + 1
+            
+            pred_back = data_miss_b[::-1, :]
+            pred_back = pred_back.copy()
+            w_back = w_back[::-1]
+
+        # 每个变量单独：扫描整个序列，对于每个空缺的区间，进行前后预测的加权融合
+        w_sum = w_front + w_back
+        wf = (w_front / w_sum).reshape(-1, 1)
+        wb = (w_back / w_sum).reshape(-1, 1)
+        pred = pred_front * wf + pred_back * wb
+
+        # 填补
+        ratios = []
+        with torch.no_grad():
+            data_impute = vali_data.data_miss.copy()
+            impute_result = pred.copy()
+            seq_len = self.args_impute.seq_len
+            for i in range(0, len(data_impute), seq_len):
+                mask_tmp = np.isnan(data_impute[i:i+seq_len, :])
+                tlen = mask_tmp.shape[0]
+                columns_to_add = seq_len - tlen
+                if not np.any(mask_tmp): continue
+                mask = torch.tensor(~mask_tmp).float().to(self.device).unsqueeze(0)
+                inp = data_impute[i:i+tlen, :]
+                inp = torch.tensor(inp).float().to(self.device).unsqueeze(0)
+                inp = inp.masked_fill(mask == 0, 0)
+                inp_mark =  vali_data.data_stamp[i:i+tlen, :]
+                inp_mark = torch.tensor(inp_mark).float().to(self.device).unsqueeze(0)
+                if columns_to_add > 0:
+                    inp = F.pad(inp, (0, 0, 0, columns_to_add), "constant", 0)
+                    inp_mark = F.pad(inp_mark, (0, 0, 0, columns_to_add), "constant", 0)
+                    mask = F.pad(mask, (0, 0, 0, columns_to_add), "constant", 0)
+                
+                outputs = self.model_impute(inp, inp_mark, None, None, mask)
+                impute_ratio = self.impute_ratio_learner(torch.cat((inp, mask), dim=1))
+                outputs = outputs.squeeze(0).cpu().numpy()[:tlen, :]
+                outputs[~mask_tmp] = (data_impute[i:i+tlen, :])[~mask_tmp]
+                print(impute_ratio.item())
+                data_impute[i:i+tlen, :] = outputs
+                # 对于每个填补区间，根据区间内观测数据比例进行加权融合
+                impute_ratio = impute_ratio.cpu().numpy()
+                ratios.append(impute_ratio)
+                impute_result[i:i+tlen, :] = impute_ratio * data_impute[i:i+tlen, :] + (1-impute_ratio) * pred[i:i+seq_len, :]
+
+        impute_result = impute_result[mask_tot]
+        pred = pred[mask_tot]
+        data_impute = data_impute[mask_tot]
+        pred_front = pred_front[mask_tot]
+        pred_back = pred_back[mask_tot]
+
+        loss = mean_squared_error(impute_result, true)
+        loss_pred = mean_squared_error(pred, true)
+        loss_impute = mean_squared_error(data_impute, true)
+        loss_front = mean_squared_error(pred_front, true)
+        loss_back = mean_squared_error(pred_back, true)
+        avg_ratio = np.mean(np.concatenate(ratios))
+        print(avg_ratio)
+        print('loss: {}  loss_pred: {}  loss_impute: {}  loss_front: {}  loss_back: {}'.format(loss, loss_pred, loss_impute, loss_front, loss_back))
+                        
+        total_loss = torch.tensor(loss)
+        self.model.train()
+        self.model_back.train()
+        self.model_impute.train()
+        self.impute_ratio_learner.train()
+        return total_loss
+
+
+    def train(self, setting):
+        train_data, train_loader = self._get_data(flag='train')
+        vali_data, vali_loader = self._get_data(flag='val')
+        test_data, test_loader = self._get_data(flag='test')
+
+        path = os.path.join(self.args.checkpoints, setting)
+        path_back = os.path.join(self.args.checkpoints, setting, 'back')
+        path_impute = os.path.join(self.args.checkpoints, setting, 'impute')
+        if not os.path.exists(path):
+            os.makedirs(path)
+        if not os.path.exists(path_back):
+            os.makedirs(path_back)
+        if not os.path.exists(path_impute):
+            os.makedirs(path_impute)
+
+        time_now = time.time()
+
+        train_steps = len(train_loader)
+        early_stopping = EarlyStopping_3(patience=self.args.patience, verbose=True)
+
+        model_optim = self._select_optimizer()
+        criterion = self._select_criterion()
+
+        torch.autograd.set_detect_anomaly(True)
+        start_time = time.time()
+        for epoch in range(self.args.train_epochs):
+            iter_count = 0
+            train_loss = []
+            train_loss_f = []
+            train_loss_b = []
+            train_loss_i = []
+
+            self.model.train()
+            self.model_back.train()
+            self.model_impute.train()
+            epoch_time = time.time()
+            for i, (batch_x, batch_x_mark, batch_y, batch_y_mark, batch_y_miss, batch_z, batch_z_mark) in enumerate(train_loader):
+                iter_count += 1
+                model_optim.zero_grad()
+
+                batch_x = batch_x.float().to(self.device)
+                batch_x_mark = batch_x_mark.float().to(self.device)
+                batch_y = batch_y.float().to(self.device)
+                batch_y_mark = batch_y_mark.float().to(self.device)
+                # batch_y_miss = batch_y_miss.float().to(self.device)
+                batch_z = batch_z.float().to(self.device)
+                batch_z_mark = batch_z_mark.float().to(self.device)
+
+                # 训练填补模型
+                B, T, N = batch_y.shape
+                # 随机mask
+                # mask = torch.rand((B, T, N)).to(self.device)
+                # mask[mask <= self.args.mask_rate] = 0
+                # mask[mask > self.args.mask_rate] = 1
+                    
+                # 以块为单位mask
+                mask = torch.ones((B,T,N)).to(self.device)
+                mask_cnt = B * T * N * self.args.mask_rate
+                train_miss_len = random.randint(1, int(T/5))
+                while torch.sum(mask == 0) < mask_cnt:
+                    begin = random.randint(0, T - train_miss_len)
+                    mask[:, begin : begin + train_miss_len, :] = 0    
+                
+                inp = batch_y.masked_fill(mask == 0, 0)
+                
+                outputs_impute = self.model_impute(inp, batch_y_mark, None, None, mask)
+                impute_ratio = self.impute_ratio_learner(torch.cat((inp, mask), dim=1))
+
+                # 训练两个预测模型
+                seq_len = self.args.seq_len
+                pred_len = self.args.pred_len
+                inputs_front = batch_x
+                stamp_front = batch_x_mark
+                inputs_back = torch.flip(batch_z, dims=[1]).clone()
+                stamp_back = torch.flip(batch_z_mark, dims=[1])
+
+                outputs_f = self.model(inputs_front, stamp_front, None, None)
+                outputs_b = self.model_back(inputs_back, stamp_back, None, None)
+                outputs_f_t = outputs_f[:, -pred_len:, :]
+                outputs_b_t = outputs_b[:, -pred_len:, :]
+
+                outputs_b = torch.flip(outputs_b, dims=[1])
+                outputs_b_t = torch.flip(outputs_b_t, dims=[1])
+
+                # 前后融合的预测结果
+                # w_front = torch.arange(pred_len, 0, -1).to(self.device).float()
+                # w_front = w_front.view(1, pred_len, 1)
+                # w_back = torch.arange(1, pred_len+1, 1).to(self.device).float()
+                # w_back = w_back.view(1, pred_len, 1)
+                # w_sum = w_front + w_back
+                # wf = (w_front / w_sum)
+                # wb = (w_back / w_sum)
+                # pred = outputs_f_t * wf + outputs_b_t * wb
+                weight_f = torch.arange(pred_len - 1, -1, -1).to(self.device).float() / (pred_len - 1)
+                weight_f = weight_f.view(1, pred_len, 1)
+                weight_b = torch.arange(0, pred_len, 1).to(self.device).float() / (pred_len - 1)
+                weight_b = weight_b.view(1, pred_len, 1)
+                pred = (outputs_f_t * weight_f + outputs_b_t * weight_b)
+
+                # 融合的填补结果
+                # ob_rate = torch.sum(1-mask).item() / mask.numel()
+                # impute_ratio = 2/(2-ob_rate)-1
+                # impute_ratio = self.impute_ratio_learner(mask)
+                # impute_ratio = self.impute_ratio_learner(torch.cat((inp, mask), dim=[1])).cpu().numpy()
+                impute_result = impute_ratio * outputs_impute + (1-impute_ratio) * pred
+
+                loss_i = criterion(outputs_impute[mask == 0], batch_y[mask == 0])
+                loss_f = criterion(outputs_f, torch.cat((batch_x, batch_y), dim=1))
+                loss_b = criterion(outputs_b, torch.cat((batch_y, batch_z), dim=1))
+                loss_c = criterion(outputs_f_t, outputs_b_t)
+                loss_pred = criterion(pred, batch_y)
+                loss_result = criterion(impute_result[mask == 0], batch_y[mask == 0])
+                loss = loss_i + loss_f + loss_b + loss_c + loss_result + loss_pred
+                # loss = loss_i + loss_f + loss_b + loss_c
+
+                loss.backward()
+                model_optim.step()
+                train_loss.append(loss.item())
+                train_loss_f.append(loss_f.item())
+                train_loss_b.append(loss_b.item())
+                train_loss_i.append(loss_i.item())
+                
+                if (iter_count + 1) % 100 == 0:
+                    print("\titers: {0}, epoch: {1} | loss: {2:.7f}  loss_f:{3:.7f}  loss_b:{4:.7f}  loss_i:{5:.7f} loss_pred:{6:.7f} loss_res:{7:.7f}".format(iter_count + 1, epoch + 1, loss.item(), loss_f.item(), loss_b.item(), loss_i.item(), loss_pred.item(), loss_result.item()))
+                    # print(torch.mean(impute_ratio.item()))
+                    speed = (time.time() - time_now) / iter_count
+                    left_time = speed * ((self.args.train_epochs - epoch) * train_steps - i)
+                    print('\tspeed: {:.4f}s/iter; left time: {:.4f}s'.format(speed, left_time))
+                    time_now = time.time()  
+
+            print("Epoch: {} cost time: {}".format(epoch + 1, time.time() - epoch_time))
+            train_loss = np.average(train_loss)
+            vali_loss = self.vali(vali_data, vali_loader, criterion)
+            # test_loss = self.vali(test_data, test_loader, criterion)
+            test_loss = 0
+            # self.test("test")
+
+            print("Epoch: {0}, Steps: {1} | Train Loss: {2:.7f}  Vali Loss: {3:.7f} Test Loss: {4:.7f}".format(
+                epoch + 1, train_steps, train_loss, vali_loss, test_loss))
+            early_stopping(vali_loss, self.model, self.model_back, self.model_impute, path, path_back, path_impute)
+            if early_stopping.early_stop:
+                print("Early stopping")
+                break
+
+            adjust_learning_rate(model_optim, epoch + 1, self.args)
+
+        end_time = time.time()
+        self.training_time = end_time - start_time
+
+        best_model_path = path + '/' + 'checkpoint.pth'
+        best_model_path_back = path_back + '/' + 'checkpoint.pth'
+        best_model_path_impute = path_impute + '/' + 'checkpoint.pth'
+        self.model.load_state_dict(torch.load(best_model_path))
+        self.model_back.load_state_dict(torch.load(best_model_path_back))
+        self.model_impute.load_state_dict(torch.load(best_model_path_impute))
+
+        return self.model, self.model_back, self.model_impute
+
+    def test(self, setting, test=0):
+        test_data, test_loader = self._get_data(flag='test')
+        # if test:
+        #     print('loading model')
+        #     self.model.load_state_dict(torch.load(os.path.join('./checkpoints/' + setting, 'checkpoint.pth')))
+
+        folder_path = './test_results/' + setting + '/'
+        if not os.path.exists(folder_path):
+            os.makedirs(folder_path)
+
+        self.model.eval()
+        self.model_back.eval()
+        self.model_impute.eval()
+        self.impute_ratio_learner.eval()
+        tp_len = self.args.pred_len - self.args.seq_len
+
+        mask_tot = np.isnan(test_data.data_miss)
+        true = test_data.data_x[mask_tot].copy()
+        true = np.nan_to_num(true)
+        T, N = test_data.data_miss.shape
+
+        start_time = time.time()
+
+        pred_len = self.args.pred_len
+        w_front = np.ones(T)
+        # 正向预测
+        with torch.no_grad():
+            data_miss = test_data.data_miss.copy()
+            seq_len = self.args.seq_len
+            i=seq_len
+            while(i < len(data_miss)):
+                mask_tmp = np.isnan(data_miss[i, :])
+                if np.any(mask_tmp): 
+                    mask = np.isnan(data_miss[i : i + pred_len, :])
+                    series = data_miss[i - seq_len : i, :]
+                    series = torch.tensor(series).float().to(self.device).unsqueeze(0)
+                    series_mark = test_data.data_stamp[i - seq_len : i, :]
+                    series_mark = torch.tensor(series_mark).float().to(self.device).unsqueeze(0)
+                    
+                    outputs = self.model(series, series_mark, None, None)[:, -pred_len:, :]
+                    outputs = outputs.squeeze(0).cpu().numpy()
+                    outputs[~mask] = (data_miss[i : i + pred_len, :])[~mask]
+
+                    data_miss[i : i + pred_len, :] = outputs
+                    w_front[i : i + pred_len] = np.arange(pred_len, 0, -1)
+                    i = i + pred_len
+                else:
+                    i = i + 1
+            
+            pred_front = data_miss.copy()
+            
+        # 反向预测
+        w_back = np.ones(T)
+        with torch.no_grad():
+            data_miss_b = test_data.data_miss
+            data_miss_b = data_miss_b[::-1, :].copy()
+            data_stamp = test_data.data_stamp
+            data_stamp = data_stamp[::-1, :].copy()
+
+            seq_len = self.args.seq_len
+            i=seq_len
+            while(i < len(data_miss_b)):
+                mask_tmp = np.isnan(data_miss_b[i, :])
+                if np.any(mask_tmp): 
+                    mask_b = np.isnan(data_miss_b[i : i + pred_len, :])
+                    series_b = data_miss_b[i - seq_len : i, :]
+                    series_b = torch.tensor(series_b).float().to(self.device).unsqueeze(0)
+                    series_mark_b = data_stamp[i - seq_len : i, :]
+                    series_mark_b = torch.tensor(series_mark_b).float().to(self.device).unsqueeze(0)
+                    outputs = self.model_back(series_b, series_mark_b, None, None)[:, -pred_len:, :]
+                    outputs = outputs.squeeze(0).cpu().numpy()
+                    outputs[~mask_b] = (data_miss_b[i : i + pred_len, :])[~mask_b]
+
+                    data_miss_b[i : i + pred_len, :] = outputs
+                    w_back[i : i + pred_len] = np.arange(pred_len, 0, -1)
+                    i=i + pred_len
+                else:
+                    i=i + 1
+            
+            pred_back = data_miss_b[::-1, :]
+            pred_back = pred_back.copy()
+            w_back = w_back[::-1]
+
+        # 每个变量单独：扫描整个序列，对于每个空缺的区间，进行前后预测的加权融合
+        w_sum = w_front + w_back
+        wf = (w_front / w_sum).reshape(-1, 1)
+        wb = (w_back / w_sum).reshape(-1, 1)
+        pred = pred_front * wf + pred_back * wb
+
+        # 填补
+        ratios = []
+        with torch.no_grad():
+            data_impute = test_data.data_miss.copy()
+            impute_result = pred.copy()
+            seq_len = self.args_impute.seq_len
+            for i in range(0, len(data_impute), seq_len):
+                mask_tmp = np.isnan(data_impute[i:i+seq_len, :])
+                tlen = mask_tmp.shape[0]
+                columns_to_add = seq_len - tlen
+                if not np.any(mask_tmp): continue
+                mask = torch.tensor(~mask_tmp).float().to(self.device).unsqueeze(0)
+                inp = data_impute[i:i+tlen, :]
+                inp = torch.tensor(inp).float().to(self.device).unsqueeze(0)
+                inp = inp.masked_fill(mask == 0, 0)
+                inp_mark =  test_data.data_stamp[i:i+tlen, :]
+                inp_mark = torch.tensor(inp_mark).float().to(self.device).unsqueeze(0)
+                if columns_to_add > 0:
+                    inp = F.pad(inp, (0, 0, 0, columns_to_add), "constant", 0)
+                    inp_mark = F.pad(inp_mark, (0, 0, 0, columns_to_add), "constant", 0)
+                    mask = F.pad(mask, (0, 0, 0, columns_to_add), "constant", 0)
+                
+                outputs = self.model_impute(inp, inp_mark, None, None, mask)
+                impute_ratio = self.impute_ratio_learner(torch.cat((inp, mask), dim=1))
+                outputs = outputs.squeeze(0).cpu().numpy()[:tlen, :]
+                outputs[~mask_tmp] = (data_impute[i:i+tlen, :])[~mask_tmp]
+                data_impute[i:i+tlen, :] = outputs
+                # 对于每个填补区间，根据区间内观测数据比例进行加权融合
+                # ob_rate = np.sum(~mask_tmp) / mask_tmp.size
+                # impute_ratio = 2/(2-ob_rate)-1
+                # impute_ratio = self.impute_ratio_learner(torch.cat((inp, mask), dim=[1])).cpu().numpy()
+                impute_ratio = impute_ratio.cpu().numpy()
+                ratios.append(impute_ratio)
+                impute_result[i:i+tlen, :] = impute_ratio * data_impute[i:i+tlen, :] + (1-impute_ratio) * pred[i:i+seq_len, :]
+
+        # impute = pred.copy()
+        # seq_len = self.args_impute.seq_len
+        # for i in range(0, len(data_impute), seq_len):
+        #     tlen = min(seq_len, len(data_impute)-i)
+        #     tmp_data = test_data.data_miss[i:i+tlen, :]
+        #     ob_rate = np.sum(~np.isnan(tmp_data)) / tmp_data.size
+        #     # impute_ratio = 2/(2-ob_rate)-1
+        #     impute_ratio = 2/(2-ob_rate)-1
+        #     impute[i:i+tlen, :] = impute_ratio * data_impute[i:i+tlen, :] + (1-impute_ratio) * pred[i:i+seq_len, :]
+
+        end_time = time.time()
+        self.generation_time = end_time - start_time
+
+        imr = impute_result
+        impute_result = impute_result[mask_tot]
+        pred = pred[mask_tot]
+        data_impute = data_impute[mask_tot]
+        pred_front = pred_front[mask_tot]
+        pred_back = pred_back[mask_tot]
+
+        mae_f = mean_absolute_error(pred_front, true)
+        mae_b = mean_absolute_error(pred_back, true)
+        mse_f = mean_squared_error(pred_front, true)
+        mse_b = mean_squared_error(pred_back, true)
+        mae = mean_absolute_error(impute_result, true)
+        mse = mean_squared_error(impute_result, true)
+
+        avg_ratio = np.mean(np.concatenate(ratios))
+
+        print("test")
+        print("mse_f_b:", mse_f, mse_b)
+        print("mae_f_b:", mae_f, mae_b)
+
+        # result save
+        folder_path = './results/' + setting + '/'
+        if not os.path.exists(folder_path):
+            os.makedirs(folder_path)
+
+        print('mse:{}, mae:{}'.format(mse, mae))
+        f = open("result_forecastImputation_3M_auto.txt", 'a')
+        f.write(setting + "  \n")
+        f.write("rate:{}, seed:{}, cnt:{}, type:{} \n".format(self.args.mask_rate,self.args.seed,self.args.miss_len,self.args.missing_type))
+        f.write('mae:, mse:\n')
+        f.write('{}\t{}'.format(mae, mse))
+        # f.write('\ntraining_time:, generation_time:\n')
+        # f.write('{}\t{}'.format(self.training_time, self.generation_time))
+        # f.write('\nratio:{}'.format(avg_ratio))
+        f.write('\n')
+        f.write('\n')
+        f.close()
+
+        np.save(folder_path + 'pred.npy', imr)
+        np.save(folder_path + 'true.npy', test_data.data_x)
+        np.save(folder_path + 'mask.npy', mask_tot)
+
+        return mse

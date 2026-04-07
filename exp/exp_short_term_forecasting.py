@@ -136,13 +136,16 @@ class Exp_Short_Term_Forecast(Exp_Basic):
         with torch.no_grad():
             # decoder input
             B, _, C = x.shape
+            print(x.shape)
             dec_inp = torch.zeros((B, self.args.pred_len, C)).float().to(self.device)
             dec_inp = torch.cat([x[:, -self.args.label_len:, :], dec_inp], dim=1).float()
             # encoder - decoder
             outputs = torch.zeros((B, self.args.pred_len, C)).float()  # .to(self.device)
             id_list = np.arange(0, B, 500)  # validation set size
             id_list = np.append(id_list, B)
+            
             for i in range(len(id_list) - 1):
+                print(id_list[i], x[id_list[i]:id_list[i + 1]].shape)
                 outputs[id_list[i]:id_list[i + 1], :, :] = self.model(x[id_list[i]:id_list[i + 1]], None,
                                                                       dec_inp[id_list[i]:id_list[i + 1]],
                                                                       None).detach().cpu()
