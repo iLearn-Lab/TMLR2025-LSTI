@@ -31,7 +31,6 @@
 - [Results](#results)
 - [TODO](#todo)
 - [Citation](#citation)
-- [Acknowledgement](#acknowledgement)
 - [License](#license)
 
 ---
@@ -302,29 +301,6 @@ bash ./scripts/classification/TimesNet.sh
   note={Under review at TMLR}
 }
 ```
-
-同时也请引用原始 Time-Series-Library:
-
-```bibtex
-@inproceedings{wu2023timesnet,
-  title={TimesNet: Temporal 2D-Variation Modeling for General Time Series Analysis},
-  author={Haixu Wu and Tengge Hu and Yong Liu and Hang Zhou and Jianmin Wang and Mingsheng Long},
-  booktitle={International Conference on Learning Representations},
-  year={2023},
-}
-```
-
----
-
-## Acknowledgement
-
-本项目基于以下开源项目构建:
-
-- [Time-Series-Library](https://github.com/thuml/Time-Series-Library) - 基础框架和模型实现
-- [Autoformer](https://github.com/thuml/Autoformer) - 预测和插补基线
-- [Anomaly-Transformer](https://github.com/thuml/Anomaly-Transformer) - 异常检测基线
-
-感谢开源社区提供的有用基线和工具。
 
 ---
 
