@@ -13,7 +13,7 @@
 - **Paper**: *Coming soon* (under double-blind review at TMLR)
 - **Base Repository**: [Time-Series-Library](https://github.com/thuml/Time-Series-Library)
 
-> 本项目基于 [Time-Series-Library](https://github.com/thuml/Time-Series-Library) 扩展，实现了 LSTI 方法。
+> This project extends [Time-Series-Library](https://github.com/thuml/Time-Series-Library) and implements the LSTI method.
 
 ---
 
@@ -44,51 +44,51 @@
 
 ## Introduction
 
-本项目是论文 **Long Short-Term Imputer: Handling Consecutive Missing Values in Time Series (LSTI)** 的官方实现。
+This repository provides the official implementation of the paper **Long Short-Term Imputer: Handling Consecutive Missing Values in Time Series (LSTI)**.
 
 ### Problem Statement
 
-时间序列数据中频繁出现的缺失值会显著阻碍时间序列分析。现有的深度学习插补方法主要针对"完全随机缺失"(MCAR)场景设计，但现实世界中的缺失值往往由于信号丢失、环境干扰和设备故障等原因连续出现并成簇分布。
+Missing values frequently occurring in time series data can significantly impede time series analysis. Existing deep learning imputation methods are primarily designed for the "Missing Completely At Random" (MCAR) scenario; however, missing values in real-world settings tend to appear consecutively and form clusters due to factors such as signal loss, environmental interference, and device failures.
 
-特别是"Blackout"模式——所有通道的缺失值在相同位置对齐——是最具挑战性的情况，因为标准插补方法无法利用其他通道或时间点的信息来重建缺失值。
+In particular, the "Blackout" pattern—where missing values across all channels are aligned at the same positions—poses the most challenging scenario, as standard imputation methods are unable to leverage information from other channels or time steps to reconstruct the missing values.
 
 ### Method Overview
 
-我们提出 **LSTI (Long Short-Term Imputer)** 来处理不同间隔长度的连续缺失值:
+We propose **LSTI (Long Short-Term Imputer)** to handle consecutive missing values of varying gap lengths:
 
-- **Long-Term Imputer**: 使用双向自回归思想设计，包含前向预测模型和后向预测模型，通过一致性正则化训练，能够捕获长期时间依赖并适应长间隔连续缺失值
+- **Long-Term Imputer**: Designed with a bidirectional autoregressive scheme, comprising a forward prediction model and a backward prediction model trained with consistency regularization. It captures long-term temporal dependencies and adapts to long-gap consecutive missing values.
 
-- **Short-Term Imputer**: 设计用于捕获短期时间依赖，可以有效插补短间隔连续缺失值
+- **Short-Term Imputer**: Designed to capture short-term temporal dependencies, effectively imputing short-gap consecutive missing values.
 
-- **Meta-weighting Network**: 自适应学习长期和短期依赖的重要性，动态平衡两个插补器的输出
+- **Meta-weighting Network**: Adaptively learns the importance of long-term and short-term dependencies, dynamically balancing the outputs of the two imputers.
 
 ### Key Contributions
 
-- 提出 Long-Term Imputer 捕获时间序列的长期依赖，使用前向和后向预测网络双向自回归插补缺失值
-- 提出 Short-Term Imputer 捕获短期依赖，配合 Meta-weighting 模块自适应平衡长短期依赖权重
-- 在五个真实世界数据集上进行了大量实验，相比当前最先进的深度学习插补方法平均降低57.4%的误差
+- Propose the Long-Term Imputer to capture long-term dependencies in time series, employing forward and backward prediction networks for bidirectional autoregressive imputation of missing values.
+- Propose the Short-Term Imputer to capture short-term dependencies, coupled with a Meta-weighting module to adaptively balance the weights of long-term and short-term dependencies.
+- Conduct extensive experiments on five real-world datasets, achieving an average error reduction of 57.4% compared to state-of-the-art deep learning imputation methods.
 
 ---
 
 ## Highlights
 
-- 提出 **LSTI (Long Short-Term Imputer)**，专注于时间序列 **连续缺失值插补 (Imputation)** 任务
-- Long-Term Imputer 使用双向自回归 + 一致性正则化，有效处理长间隔连续缺失值
-- Short-Term Imputer + Meta-weighting Network 自适应平衡长短期依赖
-- 在五个真实世界数据集（Electricity, Traffic, METR-LA, Guangzhou, PEMS04）上平均降低 **57.4%** 误差
-- 基于 [Time-Series-Library](https://github.com/thuml/Time-Series-Library) 扩展，同时支持预测、异常检测、分类等任务
+- Propose **LSTI (Long Short-Term Imputer)**, specifically designed for the task of **consecutive missing value imputation** in time series.
+- The Long-Term Imputer employs bidirectional autoregression with consistency regularization, effectively handling long-gap consecutive missing values.
+- The Short-Term Imputer, combined with the Meta-weighting Network, adaptively balances long-term and short-term dependencies.
+- Achieve an average error reduction of **57.4%** across five real-world datasets (Electricity, Traffic, METR-LA, Guangzhou, PEMS04).
+- Built upon [Time-Series-Library](https://github.com/thuml/Time-Series-Library), additionally supporting forecasting, anomaly detection, classification, and other tasks.
 
 ---
 
 ## Method / Framework
 
-LSTI 框架包含三个主要组件:
+The LSTI framework comprises three main components:
 
-1. **Long-Term Imputer**: 双向自回归网络，前向和后向预测网络分别从两个方向自回归地插补整个序列，通过一致性正则化训练
-2. **Short-Term Imputer**: 自映射网络，使用随机生成的连续缺失掩码训练，捕获短期依赖
-3. **Meta-weighting Module**: 学习当前数据中长期和短期依赖的比例，自适应平衡权重
+1. **Long-Term Imputer**: A bidirectional autoregressive network where the forward and backward prediction networks independently impute the entire sequence in an autoregressive manner from both directions, trained with consistency regularization.
+2. **Short-Term Imputer**: A self-mapping network trained with randomly generated consecutive missing masks to capture short-term dependencies.
+3. **Meta-weighting Module**: Learns the proportion of long-term versus short-term dependencies in the current data, adaptively balancing their weights.
 
-> 方法框架图请参阅论文原文。
+> Please refer to the original paper for the method framework diagram.
 
 ---
 
@@ -96,30 +96,30 @@ LSTI 框架包含三个主要组件:
 
 ```text
 .
-├── data_provider/              # 数据加载和处理
-├── exp/                        # 实验主代码 (训练、测试逻辑)
-│   ├── exp_imputation.py       # 通用插补实验
-│   ├── exp_imputation_my.py    # 扩展插补实验
-│   ├── exp_LSTI_onlyLong.py    # LSTI Long-Term Imputer 实验专有
+├── data_provider/              # Data loading and processing
+├── exp/                        # Experiment main code (training & testing logic)
+│   ├── exp_imputation.py       # General imputation experiment
+│   ├── exp_imputation_my.py    # Extended imputation experiment
+│   ├── exp_LSTI_onlyLong.py    # LSTI Long-Term Imputer experiment specific
 │   ├── exp_forcastImputation_AR.py
 │   ├── exp_forcastImputation_3M_auto.py
 │   └── ...
-├── layers/                     # 网络层组件
-├── models/                     # 模型实现
-│   ├── TimesNet_AR.py          # TimesNet 自回归版本 (LSTI backbone)
-│   ├── TimesNet.py             # TimesNet 原始版本
+├── layers/                     # Network layer components
+├── models/                     # Model implementations
+│   ├── TimesNet_AR.py          # TimesNet autoregressive version (LSTI backbone)
+│   ├── TimesNet.py             # TimesNet original version
 │   ├── iTransformer_AR.py
 │   ├── Transformer_AR.py
 │   ├── Transformer_GPT.py
 │   └── ...
-├── scripts/                    # 实验脚本
-│   ├── imputation/             # 通用插补脚本
-│   ├── forecaseImputation/     # LSTI 专属插补+预测实验脚本
+├── scripts/                    # Experiment scripts
+│   ├── imputation/             # General imputation scripts
+│   ├── forecaseImputation/     # LSTI-specific imputation + forecasting scripts
 │   └── ...
-├── pic/                        # 图片资源
-├── utils/                      # 工具函数
-├── run.py                      # 原始运行脚本 (Time-Series-Library)
-├── myrun.py                    # LSTI 扩展运行脚本 (推荐)
+├── pic/                        # Image resources
+├── utils/                      # Utility functions
+├── run.py                      # Original entry script (Time-Series-Library)
+├── myrun.py                    # LSTI extended entry script (recommended)
 ├── requirements.txt
 └── README.md
 ```
@@ -153,31 +153,31 @@ pip install -r requirements.txt
 
 ## Checkpoints / Models
 
-训练好的模型权重会保存在 `./checkpoints/` 目录下。如需使用已有权重，请下载后放入该目录，或在运行脚本时通过 `--checkpoints` 参数指定路径。
+Trained model weights are saved in the `./checkpoints/` directory. To use pre-trained weights, download them and place them in this directory, or specify the path via the `--checkpoints` argument when running the scripts.
 
 ---
 
 ## Dataset / Benchmark
 
-本仓库支持两类数据集：
+This repository supports two categories of datasets:
 
-### LSTI 论文实验数据集
+### LSTI Paper Experiment Datasets
 
-论文使用以下五个真实世界数据集进行连续缺失值插补实验：
+The paper uses the following five real-world datasets for consecutive missing value imputation experiments:
 
 | Dataset | Description | Source |
 |---------|-------------|--------|
-| Electricity | 321 维电力负荷数据（小时级，2012-2014） | UCI |
-| Traffic | 862 维高速公路交通占有率数据（小时级，2015-2016） | Caltrans PeMS |
-| METR-LA | 207 维洛杉矶县高速公路交通速度数据 | [Li et al., 2018] |
-| Guangzhou | 214 维广州市道路交通速度数据（10分钟级，2016） | [Chen et al., 2018] |
-| PEMS04 | 307 维旧金山湾区交通传感器数据（59天，2018） | [Chen et al., 2001] |
+| Electricity | 321-dimensional electricity load data (hourly, 2012–2014) | UCI |
+| Traffic | 862-dimensional highway traffic occupancy data (hourly, 2015–2016) | Caltrans PeMS |
+| METR-LA | 207-dimensional traffic speed data from Los Angeles County highways | [Li et al., 2018] |
+| Guangzhou | 214-dimensional urban traffic speed data from Guangzhou (10-min intervals, 2016) | [Chen et al., 2018] |
+| PEMS04 | 307-dimensional traffic sensor data from the San Francisco Bay Area (59 days, 2018) | [Chen et al., 2001] |
 
-> 请将数据放入 `./dataset/` 目录。具体的数据预处理方式请参阅论文 Section 4.1。
+> Please place the data in the `./dataset/` directory. For detailed data preprocessing procedures, refer to Section 4.1 of the paper.
 
-### 通用数据集（Time-Series-Library 继承）
+### General Datasets (Inherited from Time-Series-Library)
 
-以下数据集可用于预测、异常检测、分类等任务：
+The following datasets can be used for forecasting, anomaly detection, classification, and other tasks:
 
 - **Google Drive**: [Download Link](https://drive.google.com/drive/folders/13Cg1KYOlzM5C7K8gK8NfC-F3EYxkM3D2?usp=sharing)
 - **Baidu Drive**: [Download Link](https://pan.baidu.com/s/1r3KhGd0Q9PJIUZdfEYoymg?pwd=i9iy)
@@ -194,14 +194,14 @@ pip install -r requirements.txt
 
 ## Usage
 
-本项目提供两个入口脚本：
+This project provides two entry scripts:
 
-- **`myrun.py`** — LSTI 扩展脚本（推荐），支持 LSTI 专属任务类型
-- **`run.py`** — 原始 Time-Series-Library 脚本，支持通用任务
+- **`myrun.py`** — LSTI extended script (recommended), supporting LSTI-specific task types
+- **`run.py`** — Original Time-Series-Library script, supporting general tasks
 
-### Imputation（LSTI 核心任务）
+### Imputation (LSTI Core Task)
 
-使用 `myrun.py` 运行 LSTI 插补实验：
+Run LSTI imputation experiments using `myrun.py`:
 
 ```bash
 python -u myrun.py \
@@ -227,39 +227,39 @@ python -u myrun.py \
   --missing_type Blackout
 ```
 
-或使用预设脚本：
+Alternatively, use the provided scripts:
 
 ```bash
 bash ./scripts/forecaseImputation/exe.sh
 ```
 
-### LSTI 专属任务类型
+### LSTI-Specific Task Types
 
-`myrun.py` 支持以下 LSTI 专属任务（`run.py` 不支持）：
+`myrun.py` supports the following LSTI-specific tasks (not available in `run.py`):
 
-| Task Name | 说明 |
-|-----------|------|
-| `forecastImputation` | LSTI 插补+预测联合任务 |
-| `forecastImputation_3M_auto` | LSTI 3M 自动模式 |
-| `LSTI_onlyLong` | 仅使用 Long-Term Imputer（消融实验） |
+| Task Name | Description |
+|-----------|-------------|
+| `forecastImputation` | LSTI joint imputation + forecasting task |
+| `forecastImputation_3M_auto` | LSTI 3M automatic mode |
+| `LSTI_onlyLong` | Long-Term Imputer only (ablation study) |
 
-### 通用任务（继承自 Time-Series-Library）
+### General Tasks (Inherited from Time-Series-Library)
 
 ```bash
-# 使用 run.py 运行通用任务
-# 长期预测
+# Run general tasks using run.py
+# Long-term forecasting
 bash ./scripts/long_term_forecast/ETT_script/TimesNet_ETTh1.sh
-# 短期预测
+# Short-term forecasting
 bash ./scripts/short_term_forecast/TimesNet_M4.sh
-# 异常检测
+# Anomaly detection
 bash ./scripts/anomaly_detection/PSM/TimesNet.sh
-# 分类
+# Classification
 bash ./scripts/classification/TimesNet.sh
 ```
 
 ### Available Models
 
-项目支持以下模型:
+The project supports the following models:
 
 - [x] **TimesNet** / **TimesNet_AR** - TimesNet: Temporal 2D-Variation Modeling for General Time Series Analysis [[ICLR 2023]](https://openreview.net/pdf?id=ju_Uqw384Oq)
 - [x] **iTransformer** / **iTransformer_AR** - iTransformer: Inverted Transformers Are Effective for Time Series Forecasting [[ICLR 2024]](https://arxiv.org/abs/2310.06625)
@@ -274,24 +274,24 @@ bash ./scripts/classification/TimesNet.sh
 
 ## Results
 
-在五个真实世界数据集上，LSTI 相比当前最先进的深度学习插补方法平均降低 **57.4%** 的误差。各数据集上的 MSE 改进幅度分别为：Electricity 72.32%, Traffic 55.43%, METR-LA 40.27%, Guangzhou 54.54%, PEMS04 68.29%。
+Across five real-world datasets, LSTI achieves an average error reduction of **57.4%** compared to state-of-the-art deep learning imputation methods. The MSE improvements on each dataset are as follows: Electricity 72.32%, Traffic 55.43%, METR-LA 40.27%, Guangzhou 54.54%, PEMS04 68.29%.
 
-> 详细实验结果和对比方法请参阅论文 Table 1-5。
+> For detailed experimental results and compared methods, please refer to Tables 1–5 in the paper.
 
 ---
 
 ## TODO
 
-- [ ] 补充方法框架图（论文 Figure 2）到 `./pic/` 目录
-- [ ] 补充 LSTI 论文实验数据集的下载说明
-- [ ] 上传预训练模型权重（如 `LSTI_onlyLong_guangzhou_TimesNet_AR`）
-- [ ] 补充 `forecastImputation` 等专属任务的详细参数说明
+- [ ] Add the method framework diagram (Figure 2 in the paper) to the `./pic/` directory
+- [ ] Provide download instructions for the LSTI paper experiment datasets
+- [ ] Upload pre-trained model weights (e.g., `LSTI_onlyLong_guangzhou_TimesNet_AR`)
+- [ ] Provide detailed parameter descriptions for LSTI-specific tasks such as `forecastImputation`
 
 ---
 
 ## Citation
 
-如果您觉得本项目有用，请引用我们的论文:
+If you find this work useful, please cite our paper:
 
 ```bibtex
 @misc{lsti2026,
